@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <cstring>
 #include <cstdio>
+#include <cmath>
 
 evdev_joystick_config g_evdev_joystick_config;
 
@@ -20,8 +21,6 @@ namespace
     const u32 THREAD_SLEEP_INACTIVE_USEC = 1000000;
     const u32 READ_TIMEOUT = 10;
     const u32 THREAD_TIMEOUT_USEC = 1000000;
-
-    const std::string EVENT_JOYSTICK = "event-joystick";
 }
 
 evdev_joystick_handler::evdev_joystick_handler() {}
@@ -34,7 +33,6 @@ void evdev_joystick_handler::Init(const u32 max_connect)
 
     g_evdev_joystick_config.load();
 
-    needscale = static_cast<bool>(g_evdev_joystick_config.needscale);
     axistrigger = static_cast<bool>(g_evdev_joystick_config.axistrigger);
 
     revaxis.emplace_back(g_evdev_joystick_config.lxreverse);
@@ -42,17 +40,32 @@ void evdev_joystick_handler::Init(const u32 max_connect)
     revaxis.emplace_back(g_evdev_joystick_config.rxreverse);
     revaxis.emplace_back(g_evdev_joystick_config.ryreverse);
 
-    fs::dir devdir{"/dev/input/by-path"};
+    fs::dir devdir{"/dev/input/"};
     fs::dir_entry et;
 
     while (devdir.read(et))
     {
-        // Does the entry name end with event-joystick?
-        if (et.name.size() > EVENT_JOYSTICK.size() &&
-            et.name.compare(et.name.size() - EVENT_JOYSTICK.size(),
-                            EVENT_JOYSTICK.size(), EVENT_JOYSTICK) == 0)
+        // Check if the entry starts with event (a 5-letter word)
+        if (et.name.size() > 5 && et.name.compare(0, 5,"event") == 0)
         {
-            joy_paths.emplace_back(fmt::format("/dev/input/by-path/%s", et.name));
+            int fd = open(("/dev/input/" + et.name).c_str(), O_RDONLY|O_NONBLOCK);
+            struct libevdev *dev = NULL;
+            int rc = 1;
+            rc = libevdev_new_from_fd(fd, &dev);
+            if (rc < 0)
+            {
+                // If it's just a bad file descriptor, don't bother logging, but otherwise, log it.
+                if (rc == -9)
+                    LOG_WARNING(GENERAL, "Failed to connect to device at %s, the error was: %s", "/dev/input/" + et.name, strerror(-rc));
+                continue;
+            }
+            if (libevdev_has_event_type(dev, EV_KEY) &&
+                libevdev_has_event_code(dev, EV_ABS, ABS_X) &&
+                libevdev_has_event_code(dev, EV_ABS, ABS_Y))
+            {
+                // It's a joystick.
+                joy_paths.emplace_back(fmt::format("/dev/input/%s", et.name));
+            }
         }
     }
 
@@ -62,6 +75,7 @@ void evdev_joystick_handler::Init(const u32 max_connect)
     {
         joy_devs.push_back(nullptr);
         joy_axis_maps.emplace_back(ABS_RZ - ABS_X, -1);
+        joy_axis.emplace_back(ABS_RZ - ABS_X, -1);
         joy_button_maps.emplace_back(KEY_MAX - BTN_JOYSTICK, -1);
         joy_hat_ids.emplace_back(-1);
         m_pads.emplace_back(
@@ -110,6 +124,36 @@ void evdev_joystick_handler::update_devs()
         if (try_open_dev(i)) ++connected;
 
     m_info.now_connect = connected;
+}
+
+inline u16 Clamp0To255(f32 input)
+{
+    if (input > 255.f)
+        return 255;
+    else if (input < 0.f)
+        return 0;
+    else return static_cast<u16>(input);
+}
+
+std::tuple<u16, u16> evdev_joystick_handler::ConvertToSquirclePoint(u16 inX, u16 inY)
+{
+    // convert inX and Y to a (-1, 1) vector;
+    const f32 x = (inX - 127) / 127.f;
+    const f32 y = ((inY - 127) / 127.f);
+
+    // compute angle and len of given point to be used for squircle radius
+    const f32 angle = std::atan2(y, x);
+    const f32 r = std::sqrt(std::pow(x, 2.f) + std::pow(y, 2.f));
+
+    // now find len/point on the given squircle from our current angle and radius in polar coords
+    // https://thatsmaths.com/2016/07/14/squircles/
+    const f32 newLen = (1 + std::pow(std::sin(2 * angle), 2.f) / (g_evdev_joystick_config.squirclefactor / 1000.f)) * r;
+
+    // we now have len and angle, convert to cartisian 
+
+    const int newX = Clamp0To255(((newLen * std::cos(angle)) + 1) * 127);
+    const int newY = Clamp0To255(((newLen * std::sin(angle)) + 1) * 127);
+    return std::tuple<u16, u16>(newX, newY);
 }
 
 bool evdev_joystick_handler::try_open_dev(u32 index)
@@ -173,12 +217,16 @@ bool evdev_joystick_handler::try_open_dev(u32 index)
     int axes=0;
     for (int i=ABS_X; i<=ABS_RZ; i++)
     {
-        // Skip ABS_Z and ABS_RZ on controllers where it's used for the triggers.
-        if (axistrigger && (i == ABS_Z || i == ABS_RZ)) continue;
 
         if (libevdev_has_event_code(dev, EV_ABS, i))
         {
             LOG_NOTICE(GENERAL, "Joystick #%d has axis %d as %d", index, i, axes);
+
+            axis_ranges[i].first = libevdev_get_abs_minimum(dev, i);
+            axis_ranges[i].second = libevdev_get_abs_maximum(dev, i);
+
+            // Skip ABS_Z and ABS_RZ on controllers where it's used for the triggers.
+            if (axistrigger && (i == ABS_Z || i == ABS_RZ)) continue;
             joy_axis_maps[index][i - ABS_X] = axes++;
         }
     }
@@ -217,6 +265,28 @@ void evdev_joystick_handler::Close()
             libevdev_free(dev);
             close(fd);
         }
+    }
+}
+
+int evdev_joystick_handler::scale_axis(int axis, int value)
+{
+    auto range = axis_ranges[axis];
+    // Check if scaling is needed.
+    if (range.first != 0 || range.second != 255)
+    {
+        if (range.first < 0)
+        {
+            // Move the ranges up to make the following calculation actually *work*
+            value += -range.first;
+            range.second += -range.first;
+            range.first = 0;
+        }
+
+        return (static_cast<float>(value - range.first) / range.second) * 255;
+    }
+    else
+    {
+        return value;
     }
 }
 
@@ -331,7 +401,7 @@ void evdev_joystick_handler::thread_func()
                 }
                 else if (axistrigger && (evt.code == ABS_Z || evt.code == ABS_RZ))
                 {
-                    // For Xbox 360 controllers, a third axis represent the left/right triggers.
+                    // For Xbox controllers, a third axis represent the left/right triggers.
                     int which_trigger=0;
 
                     if (evt.code == ABS_Z)
@@ -356,8 +426,10 @@ void evdev_joystick_handler::thread_func()
                         LOG_ERROR(GENERAL, "Joystick #%d's pad has no trigger %d", i, which_trigger);
                         break;
                     }
-                    which_button->m_pressed = evt.value == 255;
-                    which_button->m_value = evt.value;
+
+                    int value = scale_axis(evt.code, evt.value);
+                    which_button->m_pressed = value > 0;
+                    which_button->m_value = value;
                 }
                 else if (evt.code >= ABS_X && evt.code <= ABS_RZ)
                 {
@@ -368,23 +440,33 @@ void evdev_joystick_handler::thread_func()
                         LOG_ERROR(GENERAL, "Joystick #%d sent axis event for invalid axis %d", i, axis);
                         break;
                     }
-
-                    auto& stick = pad.m_sticks[axis];
-
-                    int value = evt.value;
-
-                    if (needscale)
-                    {
-                        // Scale from the -32768...32768 range to the 0...256 range.
-                        value = (value / 256) + 128;
+                    
+                    if (g_evdev_joystick_config.squirclejoysticks)
+                    {   
+                        joy_axis[i][axis] = evt.value;
+                        if (evt.code == ABS_X || evt.code == ABS_Y)
+                        {
+                            int Xaxis = joy_axis_maps[i][ABS_X];
+                            int Yaxis = joy_axis_maps[i][ABS_Y];
+                            pad.m_sticks[Xaxis].m_value = scale_axis(ABS_X, joy_axis[i][Xaxis]);
+                            pad.m_sticks[Yaxis].m_value = scale_axis(ABS_Y, joy_axis[i][Yaxis]);
+                            
+                            std::tie(pad.m_sticks[Xaxis].m_value, pad.m_sticks[Yaxis].m_value) = 
+                                ConvertToSquirclePoint(pad.m_sticks[Xaxis].m_value, pad.m_sticks[Yaxis].m_value);
+                        }
+                        else
+                        {
+                            int Xaxis = joy_axis_maps[i][ABS_RX];
+                            int Yaxis = joy_axis_maps[i][ABS_RY];
+                            pad.m_sticks[Xaxis].m_value = scale_axis(ABS_RX, joy_axis[i][Xaxis]);
+                            pad.m_sticks[Yaxis].m_value = scale_axis(ABS_RY, joy_axis[i][Yaxis]);
+                            
+                            std::tie(pad.m_sticks[Xaxis].m_value, pad.m_sticks[Yaxis].m_value) = 
+                                ConvertToSquirclePoint(pad.m_sticks[Xaxis].m_value, pad.m_sticks[Yaxis].m_value);
+                        }
                     }
-
-                    if (revaxis[axis])
-                    {
-                        value = 256 - value;
-                    }
-
-                    stick.m_value = value;
+                    else
+                        pad.m_sticks[axis].m_value = scale_axis(evt.code, evt.value);
                 }
                 break;
             default:

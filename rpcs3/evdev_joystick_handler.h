@@ -8,7 +8,6 @@
 #include <vector>
 #include <thread>
 
-
 enum { EVDEV_DPAD_HAT_AXIS_X = -1, EVDEV_DPAD_HAT_AXIS_Y = -2 };
 
 struct evdev_joystick_config final : cfg::node
@@ -44,8 +43,9 @@ struct evdev_joystick_config final : cfg::node
     cfg::_bool lxreverse{this, "Reverse left stick X axis", false};
     cfg::_bool lyreverse{this, "Reverse left stick Y axis", false};
 
-    cfg::_bool needscale{this, "Axis scaling", true};
     cfg::_bool axistrigger{this, "Z axis triggers", true};
+    cfg::_bool squirclejoysticks{this, "Squircle Joysticks", true};
+    cfg::int32 squirclefactor{this, "Squircle Factor", 5000};
 
     bool load()
     {
@@ -75,7 +75,9 @@ public:
 
 private:
     void update_devs();
+    std::tuple<u16, u16> ConvertToSquirclePoint(u16 inX, u16 inY);
     bool try_open_dev(u32 index);
+    int scale_axis(int axis, int value);
     void thread_func();
 
     std::unique_ptr<std::thread> joy_thread;
@@ -84,7 +86,10 @@ private:
     std::vector<libevdev*> joy_devs;
     std::vector<std::vector<int>> joy_button_maps;
     std::vector<std::vector<int>> joy_axis_maps;
+    // joy_axis is only used for squircling
+    std::vector<std::vector<int>> joy_axis;
     std::vector<int> joy_hat_ids;
-    bool needscale, axistrigger;
+    bool axistrigger;
+    std::map<int, std::pair<int, int>> axis_ranges;
     std::vector<bool> revaxis;
 };

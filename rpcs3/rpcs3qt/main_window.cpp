@@ -1,4 +1,4 @@
-﻿
+
 #include <QApplication>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -9,7 +9,7 @@
 #include <QDesktopWidget>
 
 #include "vfs_dialog.h"
-#include "save_data_list_dialog.h"
+#include "save_manager_dialog.h"
 #include "kernel_explorer.h"
 #include "game_list_frame.h"
 #include "debugger_frame.h"
@@ -70,16 +70,18 @@ void main_window::Init()
 {
 	ui->setupUi(this);
 
-	// Load Icons: This needs to happen before any actions or buttons are created
-	RepaintToolBarIcons();
 	appIcon = QIcon(":/rpcs3.ico");
 
+	// hide utilities from the average user
+	ui->menuUtilities->menuAction()->setVisible(guiSettings->GetValue(GUI::m_showDebugTab).toBool());
+
 	// add toolbar widgets (crappy Qt designer is not able to)
+	ui->toolBar->setObjectName("mw_toolbar");
 	ui->sizeSlider->setRange(0, GUI::gl_max_slider_pos);
 	ui->sizeSlider->setSliderPosition(guiSettings->GetValue(GUI::gl_iconSize).toInt());
 	ui->toolBar->addWidget(ui->sizeSliderContainer);
 	ui->toolBar->addSeparator();
-	ui->toolBar->addWidget(ui->searchBar);
+	ui->toolBar->addWidget(ui->mw_searchbar);
 
 	// for highdpi resize toolbar icons and height dynamically
 	// choose factors to mimic Gui-Design in main_window.ui
@@ -100,6 +102,8 @@ void main_window::Init()
 
 	Q_EMIT RequestGlobalStylesheetChange(guiSettings->GetCurrentStylesheetPath());
 	ConfigureGuiFromSettings(true);
+	RepaintToolBarIcons();
+	gameListFrame->RepaintToolBarIcons();
 	
 	if (!utils::has_ssse3())
 	{
@@ -108,6 +112,32 @@ void main_window::Init()
 			"Your CPU does not support SSSE3 (with three S, not two).\n");
 
 		std::exit(EXIT_FAILURE);
+	}
+
+#ifdef BRANCH
+	if ("RPCS3/rpcs3/master"s != STRINGIZE(BRANCH))
+#elif _MSC_VER
+	fs::stat_t st;
+	if (!fs::stat(fs::get_config_dir() + "rpcs3.pdb", st) || st.is_directory || st.size < 1024 * 1024 * 100)
+#else
+	if (false)
+#endif
+	{
+		LOG_WARNING(GENERAL, "Experimental Build Warning! Build origin: " STRINGIZE(BRANCH));
+
+		QMessageBox msg;
+		msg.setWindowTitle("Experimental Build Warning");
+		msg.setWindowIcon(appIcon);
+		msg.setIcon(QMessageBox::Critical);
+		msg.setTextFormat(Qt::RichText);
+		msg.setText("Please understand that this build is not an official RPCS3 release.<br>This build contains changes that may break games, or even <b>damage</b> your data.<br>It's recommended to download and use the official build from <a href='https://rpcs3.net/download'>RPCS3 website</a>.<br><br>Build origin: " STRINGIZE(BRANCH) "<br>Do you wish to use this build anyway?");
+		msg.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+		msg.setDefaultButton(QMessageBox::No);
+
+		if (msg.exec() == QMessageBox::No)
+		{
+			std::exit(EXIT_SUCCESS);
+		}
 	}
 }
 
@@ -285,10 +315,24 @@ void main_window::BootGame()
 	}
 }
 
-void main_window::InstallPkg()
+void main_window::InstallPkg(const QString& dropPath)
 {
-	QString path_last_PKG = guiSettings->GetValue(GUI::fd_install_pkg).toString();
-	QString filePath = QFileDialog::getOpenFileName(this, tr("Select PKG To Install"), path_last_PKG, tr("PKG files (*.pkg);;All files (*.*)"));
+	QString filePath = dropPath;
+
+	if (filePath.isEmpty())
+	{
+		QString path_last_PKG = guiSettings->GetValue(GUI::fd_install_pkg).toString();
+		filePath = QFileDialog::getOpenFileName(this, tr("Select PKG To Install"), path_last_PKG, tr("PKG files (*.pkg);;All files (*.*)"));
+	}
+	else
+	{
+		if (QMessageBox::question(this, tr("PKG Decrypter / Installer"), tr("Install package: %1?").arg(filePath),
+			QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+		{
+			LOG_NOTICE(LOADER, "PKG: Cancelled installation from drop. File: %s", sstr(filePath));
+			return;
+		}
+	}
 
 	if (filePath == NULL)
 	{
@@ -306,6 +350,16 @@ void main_window::InstallPkg()
 	if (!pkg_f || pkg_f.size() < 64)
 	{
 		LOG_ERROR(LOADER, "PKG: Failed to open %s", path);
+		return;
+	}
+
+	//Check header
+	u32 pkg_signature;
+	pkg_f.seek(0);
+	pkg_f.read(pkg_signature);
+	if (pkg_signature != "\x7FPKG"_u32)
+	{
+		LOG_ERROR(LOADER, "PKG: %s is not a pkg file", fileName);
 		return;
 	}
 
@@ -358,7 +412,7 @@ void main_window::InstallPkg()
 		// Run PKG unpacking asynchronously
 		scope_thread worker("PKG Installer", [&]
 		{
-			if (pkg_install(pkg_f, local_path + '/', progress))
+			if (pkg_install(pkg_f, local_path + '/', progress, path))
 			{
 				progress = 1.;
 				return;
@@ -418,10 +472,24 @@ void main_window::InstallPkg()
 	}
 }
 
-void main_window::InstallPup()
+void main_window::InstallPup(const QString& dropPath)
 {
-	QString path_last_PUP = guiSettings->GetValue(GUI::fd_install_pup).toString();
-	QString filePath = QFileDialog::getOpenFileName(this, tr("Select PS3UPDAT.PUP To Install"), path_last_PUP, tr("PS3 update file (PS3UPDAT.PUP)"));
+	QString filePath = dropPath;
+
+	if (filePath.isEmpty())
+	{
+		QString path_last_PUP = guiSettings->GetValue(GUI::fd_install_pup).toString();
+		filePath = QFileDialog::getOpenFileName(this, tr("Select PS3UPDAT.PUP To Install"), path_last_PUP, tr("PS3 update file (PS3UPDAT.PUP)"));
+	}
+	else
+	{
+		if (QMessageBox::question(this, tr("RPCS3 Firmware Installer"), tr("Install firmware: %1?").arg(filePath),
+			QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+		{
+			LOG_NOTICE(LOADER, "Firmware: Cancelled installation from drop. File: %s", sstr(filePath));
+			return;
+		}
+	}
 
 	if (filePath == NULL)
 	{
@@ -587,7 +655,6 @@ void main_window::DecryptSPRXLibraries()
 		if (elf_file && elf_file.size() >= 4 && elf_file.read<u32>() == "SCE\0"_u32)
 		{
 			const std::size_t prx_ext_pos = prx_path.find_last_of('.');
-			const std::string& prx_ext = fmt::to_upper(prx_path.substr(prx_ext_pos != -1 ? prx_ext_pos : prx_path.size()));
 			const std::string& prx_name = prx_path.substr(prx_dir.size());
 
 			elf_file = decrypt_self(std::move(elf_file));
@@ -634,7 +701,16 @@ void main_window::SaveWindowState()
 
 void main_window::RepaintToolBarIcons()
 {
-	QColor newColor = guiSettings->GetValue(GUI::mw_toolIconColor).value<QColor>();
+	QColor newColor;
+
+	if (guiSettings->GetValue(GUI::m_enableUIColors).toBool())
+	{
+		newColor = guiSettings->GetValue(GUI::mw_toolIconColor).value<QColor>();
+	}
+	else
+	{
+		newColor = GUI::get_Label_Color("toolbar_icon_color");
+	}
 
 	icon_play = gui_settings::colorizedIcon(QIcon(":/Icons/play.png"), GUI::mw_tool_icon_color, newColor);
 	icon_pause = gui_settings::colorizedIcon(QIcon(":/Icons/pause.png"), GUI::mw_tool_icon_color, newColor);
@@ -675,7 +751,7 @@ void main_window::RepaintToolBarIcons()
 		ui->toolbar_fullscreen->setIcon(icon_fullscreen_off);
 	}
 
-	ui->sizeSlider->setStyleSheet(QString("QSlider::handle:horizontal{ background: rgba(%1, %2, %3, %4); }")
+	ui->sizeSlider->setStyleSheet(ui->sizeSlider->styleSheet().append("QSlider::handle:horizontal{ background: rgba(%1, %2, %3, %4); }")
 		.arg(newColor.red()).arg(newColor.green()).arg(newColor.blue()).arg(newColor.alpha()));
 }
 
@@ -831,7 +907,7 @@ void main_window::BootRecentAction(const QAction* act)
 			LOG_ERROR(GENERAL, "Recent Game not valid, removed from Boot Recent list: %s", sstr(pth));
 
 			// refill menu with actions
-			for (uint i = 0; i < m_recentGameActs.count(); i++)
+			for (int i = 0; i < m_recentGameActs.count(); i++)
 			{
 				m_recentGameActs[i]->setShortcut(tr("Ctrl+%1").arg(i + 1));
 				m_recentGameActs[i]->setToolTip(m_rg_entries.at(i).second);
@@ -871,12 +947,12 @@ QAction* main_window::CreateRecentAction(const q_string_pair& entry, const uint&
 	{
 		if (m_rg_entries.contains(entry))
 		{
+			LOG_ERROR(GENERAL, "Recent Game not valid, removing from Boot Recent list: %s", sstr(entry.first));
+
 			int idx = m_rg_entries.indexOf(entry);
 			m_rg_entries.removeAt(idx);
 
 			guiSettings->SetValue(GUI::rg_entries, guiSettings->List2Var(m_rg_entries));
-
-			LOG_ERROR(GENERAL, "Recent Game not valid, removed from Boot Recent list: %s", sstr(entry.first));
 		}
 		return nullptr;
 	}
@@ -954,7 +1030,7 @@ void main_window::AddRecentAction(const q_string_pair& entry)
 	}
 	
 	// refill menu with actions
-	for (uint i = 0; i < m_recentGameActs.count(); i++)
+	for (int i = 0; i < m_recentGameActs.count(); i++)
 	{
 		m_recentGameActs[i]->setShortcut(tr("Ctrl+%1").arg(i+1));
 		m_recentGameActs[i]->setToolTip(m_rg_entries.at(i).second);
@@ -962,6 +1038,27 @@ void main_window::AddRecentAction(const q_string_pair& entry)
 	}
 
 	guiSettings->SetValue(GUI::rg_entries, guiSettings->List2Var(m_rg_entries));
+}
+
+void main_window::RepaintToolbar()
+{
+	if (guiSettings->GetValue(GUI::m_enableUIColors).toBool())
+	{
+		QColor tbc = guiSettings->GetValue(GUI::mw_toolBarColor).value<QColor>();
+
+		ui->toolBar->setStyleSheet(GUI::stylesheet + QString(
+			"QToolBar { background-color: rgba(%1, %2, %3, %4); }"
+			"QToolBar::separator {background-color: rgba(%5, %6, %7, %8); width: 1px; margin-top: 2px; margin-bottom: 2px;}"
+			"QSlider { background-color: rgba(%1, %2, %3, %4); }"
+			"QLineEdit { background-color: rgba(%1, %2, %3, %4); }")
+			.arg(tbc.red()).arg(tbc.green()).arg(tbc.blue()).arg(tbc.alpha())
+			.arg(tbc.red() - 20).arg(tbc.green() - 20).arg(tbc.blue() - 20).arg(tbc.alpha() - 20)
+		);
+	}
+	else
+	{
+		ui->toolBar->setStyleSheet(GUI::stylesheet);
+	}
 }
 
 void main_window::CreateActions()
@@ -1020,8 +1117,8 @@ void main_window::CreateConnects()
 	connect(ui->freezeRecentAct, &QAction::triggered, [=](bool checked) {
 		guiSettings->SetValue(GUI::rg_freeze, checked);
 	});
-	connect(ui->bootInstallPkgAct, &QAction::triggered, this, &main_window::InstallPkg);
-	connect(ui->bootInstallPupAct, &QAction::triggered, this, &main_window::InstallPup);
+	connect(ui->bootInstallPkgAct, &QAction::triggered, [this] {InstallPkg(); });
+	connect(ui->bootInstallPupAct, &QAction::triggered, [this] {InstallPup(); });
 	connect(ui->exitAct, &QAction::triggered, this, &QWidget::close);
 	connect(ui->sysPauseAct, &QAction::triggered, Pause);
 	connect(ui->sysStopAct, &QAction::triggered, [=]() { Emu.Stop(); });
@@ -1041,18 +1138,11 @@ void main_window::CreateConnects()
 		connect(&dlg, &settings_dialog::GuiSettingsSaveRequest, this, &main_window::SaveWindowState);
 		connect(&dlg, &settings_dialog::GuiSettingsSyncRequest, [=]() {ConfigureGuiFromSettings(true); });
 		connect(&dlg, &settings_dialog::GuiStylesheetRequest, this, &main_window::RequestGlobalStylesheetChange);
-		connect(&dlg, &settings_dialog::ToolBarRepaintRequest, this, &main_window::RepaintToolBarIcons);
-		connect(&dlg, &settings_dialog::ToolBarRepaintRequest, gameListFrame, &game_list_frame::RepaintToolBarIcons);
-		connect(&dlg, &settings_dialog::accepted, [this](){
-			gameListFrame->LoadSettings();
-			QColor tbc = guiSettings->GetValue(GUI::mw_toolBarColor).value<QColor>();
-			ui->toolBar->setStyleSheet(QString(
-				"QToolBar { background-color: rgba(%1, %2, %3, %4); }"
-				"QToolBar::separator {background-color: rgba(%5, %6, %7, %8); width: 1px; margin-top: 2px; margin-bottom: 2px;}"
-				"QSlider { background-color: rgba(%1, %2, %3, %4); }"
-				"QLineEdit { background-color: rgba(%1, %2, %3, %4); }")
-				.arg(tbc.red()).arg(tbc.green()).arg(tbc.blue()).arg(tbc.alpha())
-				.arg(tbc.red() - 20).arg(tbc.green() - 20).arg(tbc.blue() - 20).arg(tbc.alpha() - 20));
+		connect(&dlg, &settings_dialog::GuiRepaintRequest, [this](){
+			gameListFrame->RepaintIcons(true);
+			gameListFrame->RepaintToolBarIcons();
+			RepaintToolbar();
+			RepaintToolBarIcons();
 		});
 		dlg.exec();
 	};
@@ -1063,7 +1153,7 @@ void main_window::CreateConnects()
 	connect(ui->confSystemAct, &QAction::triggered, [=]() { openSettings(4); });
 
 	connect(ui->confPadAct, &QAction::triggered, this, [=](){
-		pad_settings_dialog dlg(this);
+		pad_settings_dialog dlg(guiSettings, this);
 		dlg.exec();
 	});
 	connect(ui->confAutopauseManagerAct, &QAction::triggered, [=](){
@@ -1076,11 +1166,12 @@ void main_window::CreateConnects()
 		gameListFrame->Refresh(true); // dev-hdd0 may have changed. Refresh just in case.
 	});
 	connect(ui->confSavedataManagerAct, &QAction::triggered, [=](){
-		save_data_list_dialog* sdid = new save_data_list_dialog({}, 0, false, this);
+
+		save_manager_dialog* sdid = new save_manager_dialog();
 		sdid->show();
 	});
 	connect(ui->toolsCgDisasmAct, &QAction::triggered, [=](){
-		cg_disasm_window* cgdw = new cg_disasm_window(guiSettings, this);
+		cg_disasm_window* cgdw = new cg_disasm_window(guiSettings);
 		cgdw->show();
 	});
 	connect(ui->toolskernel_explorerAct, &QAction::triggered, [=](){
@@ -1167,24 +1258,22 @@ void main_window::CreateConnects()
 		int index;
 
 		if (act == ui->setIconSizeTinyAct) index = 0;
-		else if (act == ui->setIconSizeSmallAct) index = GUI::gl_max_slider_pos / 3;
-		else if (act == ui->setIconSizeMediumAct) index = GUI::gl_max_slider_pos * 2 / 3;
+		else if (act == ui->setIconSizeSmallAct) index = GUI::get_Index(GUI::gl_icon_size_small);
+		else if (act == ui->setIconSizeMediumAct) index = GUI::get_Index(GUI::gl_icon_size_medium);
 		else index = GUI::gl_max_slider_pos;
 
 		resizeIcons(index);
 	});
 	connect (gameListFrame, &game_list_frame::RequestIconSizeActSet, [=](const int& idx)
 	{
-		int index = GUI::gl_max_slider_pos / 4;
-
-		if (idx < index) ui->setIconSizeTinyAct->setChecked(true);
-		else if (idx < index * 2) ui->setIconSizeSmallAct->setChecked(true);
-		else if (idx < index * 3) ui->setIconSizeMediumAct->setChecked(true);
+		if (idx < GUI::get_Index((GUI::gl_icon_size_small + GUI::gl_icon_size_min) / 2)) ui->setIconSizeTinyAct->setChecked(true);
+		else if (idx < GUI::get_Index((GUI::gl_icon_size_medium + GUI::gl_icon_size_small) / 2)) ui->setIconSizeSmallAct->setChecked(true);
+		else if (idx < GUI::get_Index((GUI::gl_icon_size_max + GUI::gl_icon_size_medium) / 2)) ui->setIconSizeMediumAct->setChecked(true);
 		else ui->setIconSizeLargeAct->setChecked(true);
 
 		resizeIcons(idx);
 	});
-	connect(gameListFrame, &game_list_frame::RequestSaveSliderPos, [=](const bool& save){ m_save_slider_pos = true; });
+	connect(gameListFrame, &game_list_frame::RequestSaveSliderPos, [=](const bool& save){ Q_UNUSED(save); m_save_slider_pos = true; });
 	connect(gameListFrame, &game_list_frame::RequestListModeActSet, [=](const bool& isList)
 	{
 		isList ? ui->setlistModeListAct->trigger() : ui->setlistModeGridAct->trigger();
@@ -1216,7 +1305,7 @@ void main_window::CreateConnects()
 			ui->toolbar_fullscreen->setIcon(icon_fullscreen_off);
 		}
 	});
-	connect(ui->toolbar_controls, &QAction::triggered, [=]() { pad_settings_dialog dlg(this); dlg.exec(); });
+	connect(ui->toolbar_controls, &QAction::triggered, [=]() { pad_settings_dialog dlg(guiSettings, this); dlg.exec(); });
 	connect(ui->toolbar_config, &QAction::triggered, [=]() { openSettings(0); });
 	connect(ui->toolbar_list, &QAction::triggered, [=]() { ui->setlistModeListAct->trigger(); });
 	connect(ui->toolbar_grid, &QAction::triggered, [=]() { ui->setlistModeGridAct->trigger(); });
@@ -1229,7 +1318,7 @@ void main_window::CreateConnects()
 			m_save_slider_pos = true; // actionTriggered happens before the value was changed
 		}
 	});
-	connect(ui->searchBar, &QLineEdit::textChanged, gameListFrame, &game_list_frame::SetSearchText);
+	connect(ui->mw_searchbar, &QLineEdit::textChanged, gameListFrame, &game_list_frame::SetSearchText);
 }
 
 void main_window::CreateDockWindows()
@@ -1275,6 +1364,13 @@ void main_window::CreateDockWindows()
 	});
 	connect(gameListFrame, &game_list_frame::RequestIconPathSet, this, &main_window::SetAppIconFromPath);
 	connect(gameListFrame, &game_list_frame::RequestAddRecentGame, this, &main_window::AddRecentAction);
+	connect(gameListFrame, &game_list_frame::RequestPackageInstall, [this](const QStringList& paths){
+		for (const auto& path : paths)
+		{
+			InstallPkg(path);
+		}
+	});
+	connect(gameListFrame, &game_list_frame::RequestFirmwareInstall, this, &main_window::InstallPup);
 }
 
 void main_window::ConfigureGuiFromSettings(bool configureAll)
@@ -1306,7 +1402,7 @@ void main_window::ConfigureGuiFromSettings(bool configureAll)
 	}
 	m_recentGameActs.clear();
 	// Fill the recent games menu
-	for (uint i = 0; i < m_rg_entries.count(); i++)
+	for (int i = 0; i < m_rg_entries.count(); i++)
 	{
 		// create new action
 		QAction* act = CreateRecentAction(m_rg_entries[i], i + 1);
@@ -1335,14 +1431,7 @@ void main_window::ConfigureGuiFromSettings(bool configureAll)
 	gameListFrame->SetToolBarVisible(ui->showGameToolBarAct->isChecked());
 	ui->toolBar->setVisible(ui->showToolBarAct->isChecked());
 
-	QColor tbc = guiSettings->GetValue(GUI::mw_toolBarColor).value<QColor>();
-	ui->toolBar->setStyleSheet(QString(
-		"QToolBar { background-color: rgba(%1, %2, %3, %4); }"
-		"QToolBar::separator {background-color: rgba(%5, %6, %7, %8); width: 1px; margin-top: 2px; margin-bottom: 2px;}"
-		"QSlider { background-color: rgba(%1, %2, %3, %4); }"
-		"QLineEdit { background-color: rgba(%1, %2, %3, %4); }")
-		.arg(tbc.red()).arg(tbc.green()).arg(tbc.blue()).arg(tbc.alpha())
-		.arg(tbc.red() - 20).arg(tbc.green() - 20).arg(tbc.blue() - 20).arg(tbc.alpha() - 20));
+	RepaintToolbar();
 
 	ui->showCatHDDGameAct->setChecked(guiSettings->GetCategoryVisibility(Category::Non_Disc_Game));
 	ui->showCatDiscGameAct->setChecked(guiSettings->GetCategoryVisibility(Category::Disc_Game));

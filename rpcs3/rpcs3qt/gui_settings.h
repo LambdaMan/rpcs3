@@ -8,8 +8,9 @@
 #include <QSize>
 #include <QColor>
 #include <QBitmap>
+#include <QLabel>
 
-typedef struct GUI_SAVE
+struct GUI_SAVE
 {
 	QString key;
 	QString name;
@@ -35,11 +36,31 @@ typedef QList<q_size_pair> q_size_list;
 
 namespace GUI
 {
-	const QSize gl_icon_size_min = QSize(40, 22);
-	const QSize gl_icon_size_max = QSize(320, 176);
+	static QString stylesheet;
+
+	const QSize gl_icon_size_min    = QSize(40, 22);
+	const QSize gl_icon_size_small  = QSize(80, 44);
+	const QSize gl_icon_size_medium = QSize(160, 88);
+	const QSize gl_icon_size_max    = QSize(320, 176);
 
 	const int gl_max_slider_pos = 100;
 
+	inline int get_Index(const QSize& current)
+	{
+		int size_delta = gl_icon_size_max.width() - gl_icon_size_min.width();
+		int current_delta = current.width() - gl_icon_size_min.width();
+		return gl_max_slider_pos * current_delta / size_delta;
+	};
+
+	inline QColor get_Label_Color(const QString& objectName, QPalette::ColorRole colorRole = QPalette::Foreground)
+	{
+		QLabel dummy_color;
+		dummy_color.setObjectName(objectName);
+		dummy_color.ensurePolished();
+		return dummy_color.palette().color(colorRole);
+	};
+
+	const QString Default     = QObject::tr("default");
 	const QString main_window = "main_window";
 	const QString game_list   = "GameList";
 	const QString logger      = "Logger";
@@ -88,7 +109,7 @@ namespace GUI
 	const GUI_SAVE gl_sortAsc        = GUI_SAVE( game_list, "sortAsc",        true );
 	const GUI_SAVE gl_sortCol        = GUI_SAVE( game_list, "sortCol",        1 );
 	const GUI_SAVE gl_state          = GUI_SAVE( game_list, "state",          QByteArray() );
-	const GUI_SAVE gl_iconSize       = GUI_SAVE( game_list, "iconSize",       gl_max_slider_pos / 2);
+	const GUI_SAVE gl_iconSize       = GUI_SAVE( game_list, "iconSize",       get_Index(gl_icon_size_small));
 	const GUI_SAVE gl_iconColor      = GUI_SAVE( game_list, "iconColor",      gl_icon_color);
 	const GUI_SAVE gl_listMode       = GUI_SAVE( game_list, "listMode",       true );
 	const GUI_SAVE gl_textFactor     = GUI_SAVE( game_list, "textFactor",     (qreal) 2.0 );
@@ -109,9 +130,10 @@ namespace GUI
 	const GUI_SAVE d_splitterState = GUI_SAVE( debugger, "splitterState", QByteArray());
 
 	const GUI_SAVE m_currentConfig     = GUI_SAVE(meta, "currentConfig",     QObject::tr("CurrentSettings"));
-	const GUI_SAVE m_currentStylesheet = GUI_SAVE(meta, "currentStylesheet", QObject::tr("default"));
+	const GUI_SAVE m_currentStylesheet = GUI_SAVE(meta, "currentStylesheet", Default);
 	const GUI_SAVE m_saveNotes         = GUI_SAVE(meta, "saveNotes",         QVariantMap());
 	const GUI_SAVE m_showDebugTab      = GUI_SAVE(meta, "showDebugTab",      false);
+	const GUI_SAVE m_enableUIColors    = GUI_SAVE(meta, "enableUIColors",    false);
 
 	const GUI_SAVE gs_disableMouse = GUI_SAVE(gs_frame, "disableMouse", false);
 	const GUI_SAVE gs_resize       = GUI_SAVE(gs_frame, "resize",       false);
@@ -158,7 +180,8 @@ public:
 		@param newColor the desired color for the new icon
 		@param useSpecialMasks only used for icons with white parts and disc game icon
 	*/
-	static QIcon colorizedIcon(const QIcon& icon, const QColor& oldColor, const QColor& newColor, bool useSpecialMasks = false);
+	static QIcon colorizedIcon(const QIcon& icon, const QColor& oldColor, const QColor& newColor, bool useSpecialMasks = false, bool colorizeAll = false);
+	static QPixmap colorizedPixmap(const QPixmap& old_pixmap, const QColor& oldColor, const QColor& newColor, bool useSpecialMasks = false, bool colorizeAll = false);
 
 public Q_SLOTS:
 	void Reset(bool removeMeta = false);

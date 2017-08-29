@@ -93,7 +93,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> xSettings, const 
 		}
 		std::vector<std::string> selected_ls = std::vector<std::string>(selectedlle.begin(), selectedlle.end());
 		xemu_settings->SaveSelectedLibraries(selected_ls);
-		Q_EMIT ToolBarRepaintRequest();
+		Q_EMIT GuiRepaintRequest();
 	});
 	connect(ui->okButton, &QAbstractButton::clicked, xemu_settings.get(), &emu_settings::SaveSettings);
 	connect(ui->okButton, &QAbstractButton::clicked, this, &QDialog::accept);
@@ -103,7 +103,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> xSettings, const 
 	//     _____ _____  _    _   _______    _     
 	//    / ____|  __ \| |  | | |__   __|  | |    
 	//   | |    | |__) | |  | |    | | __ _| |__  
-	//   | |    |  ___/| |  | |    | |/ _` | '_ \ 
+	//   | |    |  ___/| |  | |    | |/ _` | '_ \
 	//   | |____| |    | |__| |    | | (_| | |_) |
 	//    \_____|_|     \____/     |_|\__,_|_.__/ 
 
@@ -123,27 +123,9 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> xSettings, const 
 
 	// Comboboxes
 
-	// TODO implement enhancement for combobox / spinbox with proper range
-	//xemu_settings->EnhanceComboBox(ui->preferredSPUThreads, emu_settings::PreferredSPUThreads);
-	const QString Auto = tr("Auto");
+	xemu_settings->EnhanceComboBox(ui->preferredSPUThreads, emu_settings::PreferredSPUThreads, true);
 	ui->preferredSPUThreads->setToolTip(json_cpu_cbo["preferredSPUThreads"].toString());
-	for (int i = 0; i <= 6; i++)
-	{
-		ui->preferredSPUThreads->addItem( i == 0 ? Auto : QString::number(i), QVariant(i) );
-	}
-	const QString valueOf_PreferredSPUThreads = qstr(xemu_settings->GetSetting(emu_settings::PreferredSPUThreads));
-	int index = ui->preferredSPUThreads->findData(valueOf_PreferredSPUThreads == "0" ? Auto : valueOf_PreferredSPUThreads);
-	if (index == -1)
-	{
-		LOG_WARNING(GENERAL, "Current setting not found while creating preferredSPUThreads");
-	}
-	else
-	{
-		ui->preferredSPUThreads->setCurrentIndex(index);
-	}
-	connect(ui->preferredSPUThreads, static_cast<void(QComboBox::*)(int)>(&QComboBox::currentIndexChanged), [=](int index) {
-		xemu_settings->SetSetting(emu_settings::PreferredSPUThreads, std::to_string(ui->preferredSPUThreads->itemData(index).toInt()));
-	});
+	ui->preferredSPUThreads->setItemText(ui->preferredSPUThreads->findData("0"), tr("Auto"));
 
 	// PPU tool tips
 	ui->ppu_precise->setToolTip(json_cpu_ppu["precise"].toString());
@@ -298,50 +280,28 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> xSettings, const 
 	auto l_OnSearchBoxTextChanged = [=](QString text)
 	{
 		QString searchTerm = text.toLower();
-		QList<QListWidgetItem*> checked_Libs;
-		QList<QListWidgetItem*> unchecked_Libs;
+		std::vector<QListWidgetItem*> items;
 
-		// create sublists. we need clones to preserve checkstates
-		for (int i = 0; i < ui->lleList->count(); ++i)
+		// duplicate current items, we need clones to preserve checkstates
+		for (int i = 0; i < ui->lleList->count(); i++)
 		{
-			if (ui->lleList->item(i)->checkState() == Qt::Checked)
-			{
-				checked_Libs.append(ui->lleList->item(i)->clone());
-			}
-			else
-			{
-				unchecked_Libs.append(ui->lleList->item(i)->clone());
-			}
+			items.push_back(ui->lleList->item(i)->clone());
 		}
 
-		// sort sublists
-		auto qLessThan = [](QListWidgetItem *i1, QListWidgetItem *i2) { return i1->text() < i2->text(); };
-		qSort(checked_Libs.begin(), checked_Libs.end(), qLessThan);
-		qSort(unchecked_Libs.begin(), unchecked_Libs.end(), qLessThan);
+		// sort items: checked items first then alphabetical order
+		std::sort(items.begin(), items.end(), [](QListWidgetItem *i1, QListWidgetItem *i2) {
+			return (i1->checkState() != i2->checkState()) ? (i1->checkState() > i2->checkState()) : (i1->text() < i2->text());
+		});
 
 		// refill library list
 		ui->lleList->clear();
 
-		for (const auto& lib : checked_Libs)
+		for (uint i = 0; i < items.size(); i++)
 		{
-			ui->lleList->addItem(lib);
-		}
-		for (const auto& lib : unchecked_Libs)
-		{
-			ui->lleList->addItem(lib);
-		}
+			ui->lleList->addItem(items[i]);
 
-		// only show items filtered for search text
-		for (int i = 0; i < ui->lleList->count(); i++)
-		{
-			if (ui->lleList->item(i)->text().contains(searchTerm))
-			{
-				ui->lleList->setRowHidden(i, false);
-			}
-			else
-			{
-				ui->lleList->setRowHidden(i, true);
-			}
+			// only show items filtered for search text
+			ui->lleList->setRowHidden(i, !items[i]->text().contains(searchTerm));
 		}
 	};
 
@@ -366,7 +326,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> xSettings, const 
 	//     _____ _____  _    _   _______    _     
 	//    / ____|  __ \| |  | | |__   __|  | |    
 	//   | |  __| |__) | |  | |    | | __ _| |__  
-	//   | | |_ |  ___/| |  | |    | |/ _` | '_ \ 
+	//   | | |_ |  ___/| |  | |    | |/ _` | '_ \
 	//   | |__| | |    | |__| |    | | (_| | |_) |
 	//    \_____|_|     \____/     |_|\__,_|_.__/ 
 
@@ -375,6 +335,15 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> xSettings, const 
 
 	xemu_settings->EnhanceComboBox(ui->renderBox, emu_settings::Renderer);
 	ui->renderBox->setToolTip(json_gpu_cbo["renderBox"].toString());
+	//Change D3D12 to D3D12[DO NOT USE]
+	for (int i = 0; i < ui->renderBox->count(); i++)
+	{
+		if (ui->renderBox->itemText(i) == "D3D12")
+		{
+			ui->renderBox->setItemText(i, r_Creator.render_D3D12);
+			break;
+		}
+	}
 
 	xemu_settings->EnhanceComboBox(ui->resBox, emu_settings::Resolution);
 	ui->resBox->setToolTip(json_gpu_cbo["resBox"].toString());
@@ -403,9 +372,6 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> xSettings, const 
 
 	xemu_settings->EnhanceCheckBox(ui->scrictModeRendering, emu_settings::StrictRenderingMode);
 	ui->scrictModeRendering->setToolTip(json_gpu_main["scrictModeRendering"].toString());
-
-	xemu_settings->EnhanceCheckBox(ui->disableVertexCache, emu_settings::DisableVertexCache);
-	ui->disableVertexCache->setToolTip(json_gpu_main["disableVertexCache"].toString());
 
 	// Graphics Adapter
 	QStringList D3D12Adapters = r_Creator.D3D12Adapters;
@@ -586,7 +552,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> xSettings, const 
 	//                      _ _         _______    _     
 	//       /\            | (_)       |__   __|  | |    
 	//      /  \  _   _  __| |_  ___      | | __ _| |__  
-	//     / /\ \| | | |/ _` | |/ _ \     | |/ _` | '_ \ 
+	//     / /\ \| | | |/ _` | |/ _ \     | |/ _` | '_ \
 	//    / ____ \ |_| | (_| | | (_) |    | | (_| | |_) |
 	//   /_/    \_\__,_|\__,_|_|\___/     |_|\__,_|_.__/ 
 
@@ -609,7 +575,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> xSettings, const 
 	//    _____       __   ____    _______    _     
 	//   |_   _|     / /  / __ \  |__   __|  | |    
 	//     | |      / /  | |  | |    | | __ _| |__  
-	//     | |     / /   | |  | |    | |/ _` | '_ \ 
+	//     | |     / /   | |  | |    | |/ _` | '_ \
 	//    _| |_   / /    | |__| |    | | (_| | |_) |
 	//   |_____| /_/      \____/     |_|\__,_|_.__/ 
 
@@ -633,7 +599,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> xSettings, const 
 	//     _____           _                   _______    _     
 	//    / ____|         | |                 |__   __|  | |    
 	//   | (___  _   _ ___| |_ ___ _ __ ___      | | __ _| |__  
-	//    \___ \| | | / __| __/ _ \ '_ ` _ \     | |/ _` | '_ \ 
+	//    \___ \| | | / __| __/ _ \ '_ ` _ \     | |/ _` | '_ \
 	//    ____) | |_| \__ \ ||  __/ | | | | |    | | (_| | |_) |
 	//   |_____/ \__, |___/\__\___|_| |_| |_|    |_|\__,_|_.__/ 
 	//            __/ |                                         
@@ -652,7 +618,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> xSettings, const 
 	//    _   _      _                      _      _______    _     
 	//   | \ | |    | |                    | |    |__   __|  | |    
 	//   |  \| | ___| |___      _____  _ __| | __    | | __ _| |__  
-	//   | . ` |/ _ \ __\ \ /\ / / _ \| '__| |/ /    | |/ _` | '_ \ 
+	//   | . ` |/ _ \ __\ \ /\ / / _ \| '__| |/ /    | |/ _` | '_ \
 	//   | |\  |  __/ |_ \ V  V / (_) | |  |   <     | | (_| | |_) |
 	//   |_| \_|\___|\__| \_/\_/ \___/|_|  |_|\_\    |_|\__,_|_.__/ 
 
@@ -664,7 +630,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> xSettings, const 
 	//    ______                 _       _               _______    _     
 	//   |  ____|               | |     | |             |__   __|  | |    
 	//   | |__   _ __ ___  _   _| | __ _| |_ ___  _ __     | | __ _| |__  
-	//   |  __| | '_ ` _ \| | | | |/ _` | __/ _ \| '__|    | |/ _` | '_ \ 
+	//   |  __| | '_ ` _ \| | | | |/ _` | __/ _ \| '__|    | |/ _` | '_ \
 	//   | |____| | | | | | |_| | | (_| | || (_) | |       | | (_| | |_) |
 	//   |______|_| |_| |_|\__,_|_|\__,_|\__\___/|_|       |_|\__,_|_.__/ 
 
@@ -680,6 +646,8 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> xSettings, const 
 	ui->gs_disableMouse->setToolTip(json_emu_misc["gs_disableMouse"].toString());
 
 	ui->cb_show_welcome->setToolTip(json_emu_gui["show_welcome"].toString());
+
+	ui->cb_custom_colors->setToolTip(json_emu_gui["custom_colors"].toString());
 
 	xemu_settings->EnhanceCheckBox(ui->exitOnStop, emu_settings::ExitRPCS3OnFinish);
 	ui->exitOnStop->setToolTip(json_emu_misc["exitOnStop"].toString());
@@ -698,32 +666,84 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> xSettings, const 
 		ui->gb_stylesheets->setEnabled(false);
 		ui->gb_configs->setEnabled(false);
 		ui->gb_settings->setEnabled(false);
+		ui->gb_colors->setEnabled(false);
 	}
 	else
 	{
+		// colorize preview icons
+		auto addColoredIcon = [&](QPushButton *button, const QColor& color, const QIcon& icon = QIcon(), const QColor& iconColor = QColor()) {
+			QLabel* text = new QLabel(button->text());
+			text->setObjectName("color_button");
+			text->setAlignment(Qt::AlignCenter);
+			text->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+			delete button->layout();
+			if (icon.isNull())
+			{
+				QPixmap pixmap(100, 100);
+				pixmap.fill(color);
+				button->setIcon(pixmap);
+			}
+			else
+			{
+				button->setIcon(gui_settings::colorizedIcon(icon, iconColor, color));
+			}
+			button->setText("");
+			button->setStyleSheet(styleSheet().append("text-align:left;"));
+			button->setLayout(new QGridLayout);
+			button->layout()->setContentsMargins(0, 0, 0, 0);
+			button->layout()->addWidget(text);
+		};
+
+		auto AddColoredIcons = [=]() {
+			addColoredIcon(ui->pb_gl_icon_color, xgui_settings->GetValue(GUI::gl_iconColor).value<QColor>());
+			addColoredIcon(ui->pb_tool_bar_color, xgui_settings->GetValue(GUI::mw_toolBarColor).value<QColor>());
+			addColoredIcon(ui->pb_gl_tool_icon_color, xgui_settings->GetValue(GUI::gl_toolIconColor).value<QColor>(), QIcon(":/Icons/home_blue.png"), GUI::gl_tool_icon_color);
+			addColoredIcon(ui->pb_tool_icon_color, xgui_settings->GetValue(GUI::mw_toolIconColor).value<QColor>(), QIcon(":/Icons/stop.png"), GUI::mw_tool_icon_color);
+		};
+		AddColoredIcons();
+
 		ui->cb_show_welcome->setChecked(xgui_settings->GetValue(GUI::ib_show_welcome).toBool());
 
-		connect(ui->okButton, &QAbstractButton::clicked, [this]() {
+		bool enableUIColors = xgui_settings->GetValue(GUI::m_enableUIColors).toBool();
+		ui->cb_custom_colors->setChecked(enableUIColors);
+		ui->pb_gl_icon_color->setEnabled(enableUIColors);
+		ui->pb_gl_tool_icon_color->setEnabled(enableUIColors);
+		ui->pb_tool_bar_color->setEnabled(enableUIColors);
+		ui->pb_tool_icon_color->setEnabled(enableUIColors);
+
+		auto ApplyGuiOptions = [&](bool reset = false) {
+			if (reset)
+			{
+				m_currentConfig = GUI::Default;
+				m_currentStylesheet = GUI::Default;
+				ui->combo_configs->setCurrentText(GUI::Default);
+				ui->combo_stylesheets->setCurrentText(GUI::Default);
+			}
 			// Only attempt to load a config if changes occurred.
-			if (m_startingConfig != xgui_settings->GetValue(GUI::m_currentConfig).toString())
+			if (m_currentConfig != xgui_settings->GetValue(GUI::m_currentConfig).toString())
 			{
 				OnApplyConfig();
 			}
-			if (m_startingStylesheet != xgui_settings->GetValue(GUI::m_currentStylesheet).toString())
+			if (m_currentStylesheet != xgui_settings->GetValue(GUI::m_currentStylesheet).toString())
 			{
 				OnApplyStylesheet();
 			}
-		});
+		};
+
+		connect(ui->okButton, &QAbstractButton::clicked, [=]() { ApplyGuiOptions(); });
 		connect(ui->pb_reset_default, &QAbstractButton::clicked, [=]() {
 			if (QMessageBox::question(this, tr("Reset GUI to default?"), tr("This will include your stylesheet as well. Do you wish to proceed?"),
 				QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes)
 			{
+				ApplyGuiOptions(true);
 				xgui_settings->Reset(true);
-				xgui_settings->ChangeToConfig(tr("default"));
-				Q_EMIT GuiStylesheetRequest(tr("default"));
+				xgui_settings->ChangeToConfig(GUI::Default);
+				Q_EMIT GuiStylesheetRequest(GUI::Default);
 				Q_EMIT GuiSettingsSyncRequest();
+				Q_EMIT GuiRepaintRequest();
 				AddConfigs();
 				AddStylesheets();
+				AddColoredIcons();
 			}
 		});
 		connect(ui->pb_backup_config, &QAbstractButton::clicked, this, &settings_dialog::OnBackupCurrentConfig);
@@ -731,6 +751,14 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> xSettings, const 
 		connect(ui->pb_apply_stylesheet, &QAbstractButton::clicked, this, &settings_dialog::OnApplyStylesheet);
 		connect(ui->pb_open_folder, &QAbstractButton::clicked, [=]() {QDesktopServices::openUrl(xgui_settings->GetSettingsDir()); });
 		connect(ui->cb_show_welcome, &QCheckBox::clicked, [=](bool val) {xgui_settings->SetValue(GUI::ib_show_welcome, val); });
+		connect(ui->cb_custom_colors, &QCheckBox::clicked, [=](bool val) {
+			xgui_settings->SetValue(GUI::m_enableUIColors, val);
+			ui->pb_gl_icon_color->setEnabled(val);
+			ui->pb_gl_tool_icon_color->setEnabled(val);
+			ui->pb_tool_bar_color->setEnabled(val);
+			ui->pb_tool_icon_color->setEnabled(val);
+			Q_EMIT GuiRepaintRequest();
+		});
 		auto colorDialog = [&](const GUI_SAVE& color, const QString& title, QPushButton *button){
 			QColor oldColor = xgui_settings->GetValue(color).value<QColor>();
 			QColorDialog dlg(oldColor, this);
@@ -748,38 +776,13 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> xSettings, const 
 				}
 				xgui_settings->SetValue(color, dlg.selectedColor());
 				button->setIcon(gui_settings::colorizedIcon(button->icon(), oldColor, dlg.selectedColor(), true));
+				Q_EMIT GuiRepaintRequest();
 			}
 		};
 		connect(ui->pb_gl_icon_color, &QAbstractButton::clicked, [=]() { colorDialog(GUI::gl_iconColor, tr("Choose gamelist icon color"), ui->pb_gl_icon_color); });
 		connect(ui->pb_gl_tool_icon_color, &QAbstractButton::clicked, [=]() { colorDialog(GUI::gl_toolIconColor, tr("Choose gamelist tool icon color"), ui->pb_gl_tool_icon_color); });
 		connect(ui->pb_tool_bar_color, &QAbstractButton::clicked, [=]() { colorDialog(GUI::mw_toolBarColor, tr("Choose tool bar color"), ui->pb_tool_bar_color); });
 		connect(ui->pb_tool_icon_color, &QAbstractButton::clicked, [=]() { colorDialog(GUI::mw_toolIconColor, tr("Choose tool icon color"), ui->pb_tool_icon_color); });
-
-		// colorize preview icons
-		auto addColoredIcon = [&](QPushButton *button, const QColor& color, const QIcon& icon = QIcon(), const QColor& iconColor = QColor()){
-			QLabel* text = new QLabel(button->text());
-			text->setAlignment(Qt::AlignCenter);
-			text->setAttribute(Qt::WA_TransparentForMouseEvents, true);
-			if (icon.isNull())
-			{
-				QPixmap pixmap(100, 100);
-				pixmap.fill(color);
-				button->setIcon(pixmap);
-			}
-			else
-			{
-				button->setIcon(gui_settings::colorizedIcon(icon, iconColor, color));
-			}
-			button->setText("");
-			button->setStyleSheet("text-align:left;");
-			button->setLayout(new QGridLayout);
-			button->layout()->setContentsMargins(0, 0, 0, 0);
-			button->layout()->addWidget(text);
-		};
-		addColoredIcon(ui->pb_gl_icon_color, xgui_settings->GetValue(GUI::gl_iconColor).value<QColor>());
-		addColoredIcon(ui->pb_tool_bar_color, xgui_settings->GetValue(GUI::mw_toolBarColor).value<QColor>());
-		addColoredIcon(ui->pb_gl_tool_icon_color, xgui_settings->GetValue(GUI::gl_toolIconColor).value<QColor>(), QIcon(":/Icons/home_blue.png"), GUI::gl_tool_icon_color);
-		addColoredIcon(ui->pb_tool_icon_color, xgui_settings->GetValue(GUI::mw_toolIconColor).value<QColor>(), QIcon(":/Icons/stop.png"), GUI::mw_tool_icon_color);
 
 		ui->gs_disableMouse->setChecked(xgui_settings->GetValue(GUI::gs_disableMouse).toBool());
 		connect(ui->gs_disableMouse, &QCheckBox::clicked, [=](bool val) { xgui_settings->SetValue(GUI::gs_disableMouse, val); });
@@ -822,7 +825,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> xSettings, const 
 	//    _____       _                   _______    _     
 	//   |  __ \     | |                 |__   __|  | |    
 	//   | |  | | ___| |__  _   _  __ _     | | __ _| |__  
-	//   | |  | |/ _ \ '_ \| | | |/ _` |    | |/ _` | '_ \ 
+	//   | |  | |/ _ \ '_ \| | | |/ _` |    | |/ _` | '_ \
 	//   | |__| |  __/ |_) | |_| | (_| |    | | (_| | |_) |
 	//   |_____/ \___|_.__/ \__,_|\__, |    |_|\__,_|_.__/ 
 	//                             __/ |                   
@@ -853,6 +856,12 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> xSettings, const 
 	xemu_settings->EnhanceCheckBox(ui->readDepth, emu_settings::ReadDepthBuffer);
 	ui->readDepth->setToolTip(json_debug["readDepth"].toString());
 
+	xemu_settings->EnhanceCheckBox(ui->disableVertexCache, emu_settings::DisableVertexCache);
+	ui->disableVertexCache->setToolTip(json_debug["disableVertexCache"].toString());
+
+	xemu_settings->EnhanceCheckBox(ui->disableHwOcclusionQueries, emu_settings::DisableOcclusionQueries);
+	ui->disableHwOcclusionQueries->setToolTip(json_debug["disableOcclusionQueries"].toString());
+
 	//
 	// Layout fix for High Dpi
 	//
@@ -863,20 +872,19 @@ void settings_dialog::AddConfigs()
 {
 	ui->combo_configs->clear();
 
-	ui->combo_configs->addItem(tr("default"));
+	ui->combo_configs->addItem(GUI::Default);
 
 	for (QString entry : xgui_settings->GetConfigEntries())
 	{
-		if (entry != tr("default"))
+		if (entry != GUI::Default)
 		{
 			ui->combo_configs->addItem(entry);
 		}
 	}
 
-	QString currentSelection = tr("CurrentSettings");
-	m_startingConfig = currentSelection;
+	m_currentConfig = tr("CurrentSettings");
 
-	int index = ui->combo_configs->findText(currentSelection);
+	int index = ui->combo_configs->findText(m_currentConfig);
 	if (index != -1)
 	{
 		ui->combo_configs->setCurrentIndex(index);
@@ -891,20 +899,19 @@ void settings_dialog::AddStylesheets()
 {
 	ui->combo_stylesheets->clear();
 
-	ui->combo_stylesheets->addItem(tr("default"));
+	ui->combo_stylesheets->addItem(GUI::Default);
 
 	for (QString entry : xgui_settings->GetStylesheetEntries())
 	{
-		if (entry != tr("default"))
+		if (entry != GUI::Default)
 		{
 			ui->combo_stylesheets->addItem(entry);
 		}
 	}
 
-	QString currentSelection = xgui_settings->GetValue(GUI::m_currentStylesheet).toString();
-	m_startingStylesheet = currentSelection;
+	m_currentStylesheet = xgui_settings->GetValue(GUI::m_currentStylesheet).toString();
 
-	int index = ui->combo_stylesheets->findText(currentSelection);
+	int index = ui->combo_stylesheets->findText(m_currentStylesheet);
 	if (index != -1)
 	{
 		ui->combo_stylesheets->setCurrentIndex(index);
@@ -951,15 +958,16 @@ void settings_dialog::OnBackupCurrentConfig()
 
 void settings_dialog::OnApplyConfig()
 {
-	QString name = ui->combo_configs->currentText();
-	xgui_settings->SetValue(GUI::m_currentConfig, name);
-	xgui_settings->ChangeToConfig(name);
+	m_currentConfig = ui->combo_configs->currentText();
+	xgui_settings->SetValue(GUI::m_currentConfig, m_currentConfig);
+	xgui_settings->ChangeToConfig(m_currentConfig);
 	Q_EMIT GuiSettingsSyncRequest();
 }
 
 void settings_dialog::OnApplyStylesheet()
 {
-	xgui_settings->SetValue(GUI::m_currentStylesheet, ui->combo_stylesheets->currentText());
+	m_currentStylesheet = ui->combo_stylesheets->currentText();
+	xgui_settings->SetValue(GUI::m_currentStylesheet, m_currentStylesheet);
 	Q_EMIT GuiStylesheetRequest(xgui_settings->GetCurrentStylesheetPath());
 }
 

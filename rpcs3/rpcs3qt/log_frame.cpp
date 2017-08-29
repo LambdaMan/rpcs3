@@ -8,11 +8,11 @@
 #include <QActionGroup>
 #include <QScrollBar>
 
-inline QString qstr(const std::string& _in) { return QString::fromUtf8(_in.data(), _in.size()); }
+constexpr auto qstr = QString::fromStdString;
 
 struct gui_listener : logs::listener
 {
-	atomic_t<logs::level> enabled{};
+	atomic_t<logs::level> enabled{logs::level::_uninit};
 
 	struct packet
 	{
@@ -35,13 +35,9 @@ struct gui_listener : logs::listener
 
 	gui_listener()
 		: logs::listener()
+		, last(new packet)
+		, read(+last)
 	{
-		// Initialize packets
-		read = new packet;
-		last = new packet;
-		read->next = last.load();
-		last->msg = fmt::format("RPCS3 v%s\n%s\n", rpcs3::version.to_string(), utils::get_system_info());
-
 		// Self-registration
 		logs::listener::add(this);
 	}
@@ -67,7 +63,7 @@ struct gui_listener : logs::listener
 				_new->msg += "} ";
 			}
 
-			if ('\0' != *msg.ch->name)
+			if (msg.ch && '\0' != *msg.ch->name)
 			{
 				_new->msg += msg.ch->name;
 				_new->msg += msg.sev == logs::level::todo ? " TODO: " : ": ";
@@ -154,10 +150,6 @@ void log_frame::SetLogLevel(logs::level lev)
 	switch (lev)
 	{
 	case logs::level::always:
-	{
-		nothingAct->trigger();
-		break;
-	}
 	case logs::level::fatal:
 	{
 		fatalAct->trigger();
@@ -213,12 +205,11 @@ void log_frame::CreateAndConnectActions()
 		act->setCheckable(true);
 		
 		// This sets the log level properly when the action is triggered.
-		auto l_callback = [this, logLevel]() {
-			s_gui_listener.enabled = logLevel;
+		connect(act, &QAction::triggered, [this, logLevel]()
+		{
+			s_gui_listener.enabled = std::max(logLevel, logs::level::fatal);
 			xgui_settings->SetValue(GUI::l_level, static_cast<uint>(logLevel));
-		};
-
-		connect(act, &QAction::triggered, l_callback);
+		});
 	};
 
 	clearAct = new QAction(tr("Clear"), this);
@@ -227,6 +218,7 @@ void log_frame::CreateAndConnectActions()
 	// Action groups make these actions mutually exclusive.
 	logLevels = new QActionGroup(this);
 	nothingAct = new QAction(tr("Nothing"), logLevels);
+	nothingAct->setVisible(false);
 	fatalAct = new QAction(tr("Fatal"), logLevels);
 	errorAct = new QAction(tr("Error"), logLevels);
 	todoAct = new QAction(tr("Todo"), logLevels);
@@ -248,7 +240,7 @@ void log_frame::CreateAndConnectActions()
 		xgui_settings->SetValue(GUI::l_tty, checked);
 	});
 
-	l_initAct(nothingAct, logs::level::always);
+	l_initAct(nothingAct, logs::level::fatal);
 	l_initAct(fatalAct, logs::level::fatal);
 	l_initAct(errorAct, logs::level::error);
 	l_initAct(todoAct, logs::level::todo);
@@ -264,7 +256,8 @@ void log_frame::LoadSettings()
 {
 	SetLogLevel(xgui_settings->GetLogLevel());
 	SetTTYLogging(xgui_settings->GetValue(GUI::l_tty).toBool());
-	stackAct->setChecked(xgui_settings->GetValue(GUI::l_stack).toBool());
+	m_stack_log = xgui_settings->GetValue(GUI::l_stack).toBool();
+	stackAct->setChecked(m_stack_log);
 }
 
 void log_frame::UpdateUI()
