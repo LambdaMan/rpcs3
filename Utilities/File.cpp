@@ -510,7 +510,7 @@ bool fs::remove_dir(const std::string& path)
 #endif
 }
 
-bool fs::rename(const std::string& from, const std::string& to)
+bool fs::rename(const std::string& from, const std::string& to, bool overwrite)
 {
 	const auto device = get_virtual_device(from);
 
@@ -525,14 +525,43 @@ bool fs::rename(const std::string& from, const std::string& to)
 	}
 
 #ifdef _WIN32
-	if (!MoveFileW(to_wchar(from).get(), to_wchar(to).get()))
+	const auto ws1 = to_wchar(from);
+	const auto ws2 = to_wchar(to);
+
+	if (!MoveFileExW(ws1.get(), ws2.get(), overwrite ? MOVEFILE_REPLACE_EXISTING : 0))
 	{
-		g_tls_error = to_error(GetLastError());
+		DWORD error1 = GetLastError();
+
+		if (overwrite && error1 == ERROR_ACCESS_DENIED && is_dir(from) && is_dir(to))
+		{
+			if (RemoveDirectoryW(ws2.get()))
+			{
+				if (MoveFileW(ws1.get(), ws2.get()))
+				{
+					return true;
+				}
+
+				error1 = GetLastError();
+				CreateDirectoryW(ws2.get(), NULL); // TODO
+			}
+			else
+			{
+				error1 = GetLastError();
+			}
+		}
+
+		g_tls_error = to_error(error1);
 		return false;
 	}
 
 	return true;
 #else
+	if (!overwrite && exists(to))
+	{
+		g_tls_error = fs::error::exist;
+		return false;
+	}
+
 	if (::rename(from.c_str(), to.c_str()) != 0)
 	{
 		g_tls_error = to_error(errno);
@@ -653,11 +682,10 @@ bool fs::truncate_file(const std::string& path, u64 length)
 		return false;
 	}
 
-	LARGE_INTEGER distance;
-	distance.QuadPart = length;
+	FILE_END_OF_FILE_INFO _eof;
+	_eof.EndOfFile.QuadPart = length;
 
-	// Seek and truncate
-	if (!SetFilePointerEx(handle, distance, NULL, FILE_BEGIN) || !SetEndOfFile(handle))
+	if (!SetFileInformationByHandle(handle, FileEndOfFileInfo, &_eof, sizeof(_eof)))
 	{
 		g_tls_error = to_error(GetLastError());
 		CloseHandle(handle);
@@ -765,10 +793,10 @@ fs::file::file(const std::string& path, bs_t<open_mode> mode)
 		disp = test(mode & fs::trunc) ? TRUNCATE_EXISTING : OPEN_EXISTING;
 	}
 
-	DWORD share = 0;
+	DWORD share = FILE_SHARE_READ;
 	if (!test(mode & fs::unshare))
 	{
-		share |= FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+		share |= FILE_SHARE_WRITE | FILE_SHARE_DELETE;
 	}
 
 	const HANDLE handle = CreateFileW(to_wchar(path).get(), access, share, NULL, disp, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -817,23 +845,15 @@ fs::file::file(const std::string& path, bs_t<open_mode> mode)
 
 		bool trunc(u64 length) override
 		{
-			LARGE_INTEGER old, pos;
+			FILE_END_OF_FILE_INFO _eof;
+			_eof.EndOfFile.QuadPart = length;
 
-			pos.QuadPart = 0;
-			if (!SetFilePointerEx(m_handle, pos, &old, FILE_CURRENT)) // get old position
+			if (!SetFileInformationByHandle(m_handle, FileEndOfFileInfo, &_eof, sizeof(_eof)))
 			{
 				g_tls_error = to_error(GetLastError());
 				return false;
 			}
 
-			pos.QuadPart = length;
-			if (!SetFilePointerEx(m_handle, pos, NULL, FILE_BEGIN)) // set new position
-			{
-				g_tls_error = to_error(GetLastError());
-				return false;
-			}
-
-			verify("file::trunc" HERE), SetEndOfFile(m_handle), SetFilePointerEx(m_handle, old, NULL, FILE_BEGIN);
 			return true;
 		}
 

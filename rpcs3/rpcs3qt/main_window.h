@@ -18,7 +18,8 @@
 
 #include <memory>
 
-namespace Ui {
+namespace Ui
+{
 	class main_window;
 }
 
@@ -72,6 +73,8 @@ public Q_SLOTS:
 	void OnEmuResume();
 	void OnEmuPause();
 	void OnEmuReady();
+
+	void RepaintGui();
 
 private Q_SLOTS:
 	void BootElf();
